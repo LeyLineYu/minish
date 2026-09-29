@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 
+bool repl();
 bool executeCommand(char* argv[]);
 
 #endif

@@ -20,4 +20,12 @@ static const FD STDOUT_FD = 1;
   if (func < 0)          \
     printErr(stringify(func) " failed")
 
+typedef struct {
+  char* str;
+  size_t size;
+} SizedString;
+
+#define STATIC_SIZED_STRING(cstr) \
+  (SizedString){ .str = cstr, .size = sizeof(cstr) - 1 }
+
 #endif
