@@ -8,29 +8,50 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+// Must be identical to int array[2];
+typedef struct {
+  FD source; // is read from
+  FD sink;   // is written into
+} Pipe;
+
 static const size_t CMD_BUF_BASE_SZ = 256;
 static const size_t ARGS_BUF_BASE_SZ = 16;
-static const SizedString PROMPT = STATIC_SIZED_STRING("$ ");
+static const size_t REALLOC_MULT = 2;
+static const char* const PROGRAM_NAME = "minish";
+static const SizedString PROMPT   = STATIC_SIZED_STRING("$ ");
+static const SizedString EXIT_CMD = STATIC_SIZED_STRING("exit");
 
 static size_t splitByWhitespace(char* str);
+static void populateArgv(char** argv, size_t argc, char* cmd);
+
+#define RETURN(value) \
+{                     \
+  ret = value;        \
+  goto exit;          \
+}
 
 // Read, Execute, Print, Loop
 bool repl() {
+  bool ret = false;
+  // bools for resource management
+  bool isCmdInited  = false,
+       isArgvInited = false;
+
   size_t cmdCap = CMD_BUF_BASE_SZ;
   char* cmd = (char*)calloc(cmdCap, sizeof(char));
   if (!cmd) {
     fprintf(stderr, "No memory for cmd buffer! Exiting...\n");
     return true;
   }
+  isCmdInited = true;
 
   size_t argsCap = ARGS_BUF_BASE_SZ;
-  char** args = (char**)calloc(argsCap, sizeof(char*));
-  if (!args) {
-    fprintf(stderr, "No memory for args buffer! Exiting...\n");
-    free(cmd);
-    return true;
+  char** argv = (char**)calloc(argsCap, sizeof(char*));
+  if (!argv) {
+    fprintf(stderr, "No memory for argv buffer! Exiting...\n");
+    RETURN(true);
   }
-  args[0] = cmd;
+  isArgvInited = true;
 
   do {
     write(STDOUT_FD, PROMPT.str, PROMPT.size); 
@@ -38,60 +59,40 @@ bool repl() {
     // so it's either write or fprintf + fflush...
     ssize_t nBytes = getline(&cmd, &cmdCap, stdin);
     if (nBytes < 0) {
-      if (feof(stdin)) {
-        free(cmd);
-        return 0;
-      }
+      if (feof(stdin))
+        RETURN(false);
 
       printErr("getline failed");
-      free(cmd);
-      return 1;
+      RETURN(true);
     }
 
     size_t argc = splitByWhitespace(cmd); 
     if (argc + 1 > argsCap) {
-      char** temp = (char**)realloc(args, (argc + 1) * sizeof(char*));
+      size_t newCap = (argc + 1) * REALLOC_MULT;
+      char** temp = (char**)realloc(argv, newCap * sizeof(char*));
       if (!temp) {
         fprintf(stderr, "No memory for args buffer! Exiting...\n");
-        free(cmd); free(args);
-        return 1;
+        RETURN(true);
       }
 
-      args = temp;
-      argsCap = argc + 1;
+      argv = temp;
+      argsCap = newCap;
     }
 
-    char* cur = cmd;
-    for (size_t i = 1; i < argc; i++) {
-      cur = strchr(cur, '\0');
-      cur++; // we can safely step one char ahead in all cases
-      if (*cur == '\0')
-        break;
+    populateArgv(argv, argc, cmd);
 
-      // skip spaces (example: "ab\0     c\0\0");
-      //        we are here ~~~~~~~~^
-      for (; isspace(*cur); cur++);
+  } while (executeCommand(argv) == 0);
 
-      args[i] = cur;
-    }
-    args[argc] = NULL; 
-
-  } while (executeCommand(args) == 0);
-
-  free(cmd);
-  free(args);
-
-  return false;
+// a cleanup label, because i was sick of writing free's everywhere
+exit:
+  if (isCmdInited)
+    free(cmd);
+  if (isArgvInited)
+    free(argv);
+  return ret;
 }
 
-// Must be identical to int array[2];
-typedef struct {
-  FD source; // is read from
-  FD sink;   // is written into
-} Pipe;
-
-static const char* const PROGRAM_NAME = "minish";
-static const SizedString EXIT_CMD = STATIC_SIZED_STRING("exit");
+#undef RETURN
 
 bool executeCommand(char* argv[]) {
   if (!argv || !argv[0])
@@ -155,4 +156,26 @@ static size_t splitByWhitespace(char* str) {
   }
 
   return argc;
+}
+
+static void populateArgv(char** argv, size_t argc, char* cmd) {
+  if (!argv || !argc || !cmd)
+    return;
+
+  argv[0] = cmd;
+  for (size_t i = 1; i < argc; i++) {
+    cmd = strchr(cmd, '\0');
+    cmd++; // we can safely step one char ahead in all cases
+    if (*cmd == '\0')
+      break;
+
+    // skip spaces (example: "ab\0     c\0\0");
+    //        we are here ~~~~~~~~^
+    for (; isspace(*cmd); cmd++);
+
+    argv[i] = cmd;
+  }
+  argv[argc] = NULL; 
+
+  return;
 }

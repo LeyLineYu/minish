@@ -3,7 +3,7 @@
 SOURCES="src/main.c src/exec.c src/echo.c"
 BUILD_DIR="build"
 TARGET="$BUILD_DIR/minish"
-FLAGS="-Wall -Wextra -fsanitize=address"
+FLAGS="-Wall -Wextra -fsanitize=address -O0"
 
 set -xe
 
