@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
 
@@ -13,9 +14,14 @@ typedef struct {
 } Pipe;
 
 static const char* const PROGRAM_NAME = "minish";
+static const char   EXIT_CMD[]   = "exit";
+static const size_t EXIT_CMD_LEN = sizeof(EXIT_CMD) - 1;
 
 bool executeCommand(char* argv[]) {
-  if (!argv)
+  if (!argv || !argv[0])
+    return true;
+
+  if (strncmp(argv[0], EXIT_CMD, EXIT_CMD_LEN) == 0)
     return true;
 
   Pipe p = {0};
