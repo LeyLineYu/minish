@@ -9,16 +9,6 @@
 #include <sys/wait.h>
 #include <signal.h>
 
-typedef int PID;
-
-static PID childPid = 0;
-
-void killChild(_unused int sig){ 
-  write(STDOUT_FD, "\n", 1);
-  kill(childPid, SIGTERM);
-  return;
-}
-
 // Must be identical to int array[2];
 typedef struct {
   FD source; // is read from
@@ -34,6 +24,10 @@ static const SizedString EXIT_CMD = STATIC_SIZED_STRING("exit");
 
 static size_t splitByWhitespace(char* str);
 static void populateArgv(char** argv, size_t argc, char* cmd);
+
+typedef int PID;
+static PID childPid = 0;
+static void killChild(_unused int sig);
 
 #define RETURN(value) \
 {                     \
@@ -148,10 +142,10 @@ bool executeCommand(char* argv[]) {
     exit(0);
   }
 
-  childPid = forkPid;
   // parent
+  childPid = forkPid;
   struct sigaction act = {
-    .sa_flags = SA_RESETHAND,
+    .sa_flags = SA_RESETHAND | SA_RESTART,
     .sa_handler = &killChild,
   };
   checkError(sigaction(SIGINT, &act, NULL));
@@ -168,8 +162,8 @@ bool executeCommand(char* argv[]) {
 
   if (echoFile(fromChild.source))
     printErr("echoFile failed");
-  checkError(wait(NULL));
 
+  checkError(wait(NULL));
   checkError(close(fromChild.source));
   checkError(dup2(oldStdin, STDIN_FD));
   checkError(close(oldStdin));
@@ -219,5 +213,11 @@ static void populateArgv(char** argv, size_t argc, char* cmd) {
   }
   argv[argc] = NULL; 
 
+  return;
+}
+
+static void killChild(_unused int sig){ 
+  write(STDOUT_FD, "\n", 1);
+  kill(childPid, SIGTERM);
   return;
 }
