@@ -7,6 +7,6 @@ int main(int argc, char* argv[]) {
     return 0;
 
   return (argc > 1)
-         ? executeCommand(argv + 1)
+         ? 1 //executeCommand(argv + 1)
          : repl();
 }

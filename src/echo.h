@@ -4,6 +4,6 @@
 #include "utils.h"
 #include <stdbool.h>
 
-bool echoFile(FD fd);
+bool echoFileTo(FD src, FD dest);
 
 #endif
