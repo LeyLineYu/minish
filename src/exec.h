@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 
+bool executeSingletonSubcommand(char** argv);
 bool repl();
 
 #endif

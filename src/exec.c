@@ -20,7 +20,7 @@ typedef struct {
   char** argv;
 } Subcommand;
 
-bool executeCommand(Subcommand* subcmds, size_t subcmdCount);
+static bool executeCommand(Subcommand* subcmds, size_t subcmdCount);
 
 static const size_t CMD_BUF_BASE_SZ     = 256;
 static const size_t ARGS_BUF_BASE_SZ    = 16;
@@ -34,12 +34,18 @@ static bool analyzeAndTrimCommand(char* cmd, size_t* argc, size_t* subcmdCount);
 static void populateSubcommands(char** argv, size_t argc, 
                                 Subcommand* subcmds, size_t subcmdCount,
                                 char* cmd);
-inline static bool doSmth(Subcommand* start, Subcommand* end);
+static bool doSmth(Subcommand* start, Subcommand* end);
 static bool doSmthRec(Subcommand* subcommand, 
                       Subcommand* start, Subcommand* end);
 
+static void execute(char** argv);
+
 typedef int PID;
 static PID CHILD_PID = -1;
+
+static void setupSignalHandlers(PID childPid, 
+                                struct sigaction* newAct,
+                                struct sigaction* oldAct); 
 static void killChild(_unused int sig);
 
 #define RETURN(value) \
@@ -122,14 +128,6 @@ bool repl() {
     }
 
     populateSubcommands(argv, argc, subcmds, subcmdCount, cmd);
-
-    for (size_t i = 0; i < subcmdCount; i++) {
-        fprintf(stderr, "Subcommand %zu, cmd: %s\n", i, subcmds[i].argv[0]);
-    }
-    for (size_t i = 0; i < argc; i++) {
-        fprintf(stderr, "arg %zu: %s\n", i, argv[i]);
-    }
-
   } while (executeCommand(subcmds, subcmdCount) == 0);
 
 // a cleanup label, because i was sick of writing frees everywhere
@@ -145,16 +143,47 @@ exit:
 
 #undef RETURN
 
-bool executeCommand(Subcommand* subcmds, size_t subcmdCount) {
+bool executeSingletonSubcommand(char** argv) {
+  if (!argv || !argv[0])
+    return true;
+
+  if (strncmp(argv[0], EXIT_CMD.str, EXIT_CMD.size) == 0)
+    return true;
+
+  PID forkPid = fork();
+  if (forkPid == 0) {
+    // child 
+    execute(argv);
+    exit(0);
+  }
+
+  // parent
+
+  // setup custom signal handling
+  struct sigaction act = {
+    .sa_flags = SA_RESETHAND | SA_RESTART,
+    .sa_handler = &killChild,
+  };
+  struct sigaction oldAct = {0};
+  setupSignalHandlers(forkPid, &act, &oldAct);
+
+  // wait for child
+  checkError(wait(NULL));
+  // restore old sigaction
+  setupSignalHandlers(-1, &oldAct, NULL);
+
+  return false;
+}
+
+static bool executeCommand(Subcommand* subcmds, size_t subcmdCount) {
   if (!subcmds         || 
       !subcmdCount     ||
       !subcmds[0].argv ||
       !subcmds[0].argv[0])
     return true;
 
-  if (subcmdCount == 1 &&
-      strncmp(subcmds[0].argv[0], EXIT_CMD.str, EXIT_CMD.size) == 0)
-    return true;
+  if (subcmdCount == 1) 
+    return executeSingletonSubcommand(subcmds[0].argv);
 
   if (doSmth(subcmds, subcmds + subcmdCount - 1))
     return true;
@@ -163,7 +192,30 @@ bool executeCommand(Subcommand* subcmds, size_t subcmdCount) {
 }
 
 inline static bool doSmth(Subcommand* start, Subcommand* end) {
-  return doSmthRec(end, start, end);
+  PID forkPid = fork();
+  if (forkPid == 0) {
+    // child 
+    doSmthRec(end - 1, start, end - 1);
+    execute(end->argv);
+    exit(0);
+  }
+
+  // parent
+
+  // setup custom signal handling
+  struct sigaction act = {
+    .sa_flags = SA_RESETHAND | SA_RESTART,
+    .sa_handler = &killChild,
+  };
+  struct sigaction oldAct = {0};
+  setupSignalHandlers(forkPid, &act, &oldAct);
+
+  // wait for child
+  checkError(wait(NULL));
+  // restore old sigaction
+  setupSignalHandlers(-1, &oldAct, NULL);
+
+  return false;
 }
 
 static bool doSmthRec(Subcommand* subcommand, 
@@ -179,11 +231,6 @@ static bool doSmthRec(Subcommand* subcommand,
     printErr("pipe fromChild failed");
     return true;
   }
-  Pipe toChild = {0};
-  if (pipe((int*)&toChild)) {
-    printErr("pipe toChild failed");
-    return true;
-  }
 
   PID forkPid = fork();
   if (forkPid == 0) {
@@ -192,74 +239,32 @@ static bool doSmthRec(Subcommand* subcommand,
     checkError(dup2(fromChild.sink, STDOUT_FD));
     checkError(close(fromChild.sink));
 
-    if (subcommand != start) {
-      checkError(close(toChild.sink));
-      checkError(dup2(toChild.source, STDIN_FD));
-      checkError(close(toChild.source));
-    }
-
-    fprintf(stderr, " i am %s\n", subcommand->argv[0]);
     if (subcommand != start)
       if (doSmthRec(subcommand - 1, start, end))
         exit(1);
 
-    fprintf(stderr, "about to execute %s\n", subcommand->argv[0]);
-    if (execvp(subcommand->argv[0], subcommand->argv) < 0) {
-      if (errno == ENOENT)
-        fprintf(stderr, 
-                "%s: %s: command not found\n",
-                PROGRAM_NAME, subcommand->argv[0]);
-      else
-        printErr("execvp failed");
-    }
-
+    execute(subcommand->argv);
     exit(0);
   }
 
   // parent
 
   // setup signal handling
-  CHILD_PID = forkPid;
   struct sigaction act = {
     .sa_flags = SA_RESETHAND | SA_RESTART,
     .sa_handler = &killChild,
   };
   struct sigaction oldAct = {0};
-  checkError(sigaction(SIGINT, &act, &oldAct));
+  setupSignalHandlers(forkPid, &act, &oldAct);
 
   // setup fds
   checkError(close(fromChild.sink));
-  FD parentStdinCopy = -1;
-  if (subcommand == start) {
-    parentStdinCopy = dup(STDIN_FD);
-    if (parentStdinCopy < 0) {
-      printErr("dup for the parent stdin failed, i'm tired...");
-      return true;
-    }
-    close(STDIN_FD);
-  }
-
-  if (subcommand != end) { 
-    checkError(close(toChild.source));
-    checkError(dup2(toChild.sink, STDOUT_FD));
-    checkError(close(toChild.sink));
-  }
-
-  // echo all child's output to stdout if this is the outmost command
-  // else echo the output to the stdinCopy we saved
-  if (echoFileTo(fromChild.source, STDOUT_FD))
-    printErr("echoFile failed");
+  checkError(dup2(fromChild.source, STDIN_FD));
+  checkError(close(fromChild.source));
 
   checkError(wait(NULL));
   // restore old sigaction
-  CHILD_PID = -1;
-  checkError(sigaction(SIGINT, &oldAct, NULL));
-  // close remaining fds, and restore parent stdin
-  checkError(close(fromChild.source));
-  if (subcommand == start) {
-    checkError(dup2(parentStdinCopy, STDIN_FD));
-    checkError(close(parentStdinCopy));
-  }
+  setupSignalHandlers(-1, &oldAct, NULL);
 
   return false;
 }
@@ -284,8 +289,13 @@ static bool analyzeAndTrimCommand(char* cmd, size_t* argc, size_t* subcmdCount) 
 
     if (*cmd == '|') {
       if (lastPipe == *argc) {
-        fprintf(stderr,
-                "Ill formed command, pipes are next to each other\n");
+        if (lastPipe == 0)
+          fprintf(stderr,
+                  "Ill-formed command, leading pipe\n");
+        else
+          fprintf(stderr,
+                  "Ill-formed command, pipes are next to each other\n");
+
         return true;
       }
 
@@ -304,7 +314,7 @@ static bool analyzeAndTrimCommand(char* cmd, size_t* argc, size_t* subcmdCount) 
 
   if (lastPipe == *argc) {
     fprintf(stderr, 
-            "Ill formed command, trailing pipe\n");
+            "Ill-formed command, trailing pipe\n");
     return true;
   }
 
@@ -353,6 +363,30 @@ static void populateSubcommands(char** argv, size_t argc,
   argv[argc] = NULL; 
 
   return;
+}
+
+static void execute(char** argv) {
+  if (!argv || !argv[0])
+    return;
+
+  if (execvp(argv[0], argv) < 0) {
+      if (errno == ENOENT)
+        fprintf(stderr, 
+                "%s: %s: command not found\n",
+                PROGRAM_NAME, argv[0]);
+      else
+        printErr("execvp failed");
+  }
+}
+
+static void setupSignalHandlers(PID childPid, 
+                                struct sigaction* newAct,
+                                struct sigaction* oldAct) {
+  if (!newAct)
+    return;
+
+  CHILD_PID = childPid;
+  checkError(sigaction(SIGINT, newAct, oldAct));
 }
 
 static void killChild(_unused int sig){ 
