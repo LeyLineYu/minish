@@ -7,6 +7,17 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <signal.h>
+
+typedef int PID;
+
+static PID childPid = 0;
+
+void killChild(_unused int sig){ 
+  write(STDOUT_FD, "\n", 1);
+  kill(childPid, SIGTERM);
+  return;
+}
 
 // Must be identical to int array[2];
 typedef struct {
@@ -101,18 +112,29 @@ bool executeCommand(char* argv[]) {
   if (strncmp(argv[0], EXIT_CMD.str, EXIT_CMD.size) == 0)
     return true;
 
-  Pipe p = {0};
-  if (pipe((int*)&p)) {
-    printErr("pipe failed");
+  Pipe toChild   = {0};
+  Pipe fromChild = {0};
+  if (pipe((int*)&fromChild)) {
+    printErr("pipe fromChild failed");
+    return true;
+  }
+  if (pipe((int*)&toChild)) {
+    printErr("pipe toChild failed");
+    checkError(close(fromChild.sink));
+    checkError(close(fromChild.source));
     return true;
   }
 
-  FD forkPid = fork();
+  PID forkPid = fork();
   if (forkPid == 0) {
     // child
-    checkError(close(p.source));
-    checkError(dup2(p.sink, STDOUT_FD));
-    checkError(close(p.sink));
+    checkError(close(fromChild.source));
+    checkError(dup2(fromChild.sink, STDOUT_FD));
+    checkError(close(fromChild.sink));
+
+    checkError(close(toChild.sink));
+    checkError(dup2(toChild.source, STDIN_FD));
+    checkError(close(toChild.source));
 
     if (execvp(argv[0], argv) < 0) {
       if (errno == ENOENT)
@@ -126,11 +148,31 @@ bool executeCommand(char* argv[]) {
     exit(0);
   }
 
+  childPid = forkPid;
   // parent
-  checkError(close(p.sink));
-  if (echoFile(p.source))
+  struct sigaction act = {
+    .sa_flags = SA_RESETHAND,
+    .sa_handler = &killChild,
+  };
+  checkError(sigaction(SIGINT, &act, NULL));
+
+  checkError(close(fromChild.sink));
+  checkError(close(toChild.source));
+
+  FD oldStdin = dup(STDIN_FD);
+  if (oldStdin < 0)
+    printErr("dup for the old stdin failed, i'm tired...");
+
+  checkError(dup2(toChild.sink, STDIN_FD));
+  checkError(close(toChild.sink));
+
+  if (echoFile(fromChild.source))
     printErr("echoFile failed");
   checkError(wait(NULL));
+
+  checkError(close(fromChild.source));
+  checkError(dup2(oldStdin, STDIN_FD));
+  checkError(close(oldStdin));
 
   return false;
 }

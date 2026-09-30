@@ -28,4 +28,10 @@ typedef struct {
 #define STATIC_SIZED_STRING(cstr) \
   (SizedString){ .str = cstr, .size = sizeof(cstr) - 1 }
 
+#ifdef __GNUC__
+  #define _unused __attribute__((unused))
+#else
+  #define _unused 
+#endif
+
 #endif
