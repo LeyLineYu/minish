@@ -13,7 +13,7 @@ cd minish
 
 `minish` has two modes
 
-The first one is called a "one-off mode":
+**The first one is called a "one-off mode":**
 
 ```bash
 ./build/minish cmd arg1 arg2 arg3 arg4
@@ -22,7 +22,7 @@ The first one is called a "one-off mode":
 In this mode, piping is not implemented, since this just redirects
 the arguments straight to execution, with no parsing involved.
 
-The second mode is called an "interactive mode":
+**The second mode is called an "interactive mode":**
 
 To launch this mode, provide no arguments to `minish`.
 ```bash
