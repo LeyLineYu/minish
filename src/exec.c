@@ -26,7 +26,7 @@ static size_t splitByWhitespace(char* str);
 static void populateArgv(char** argv, size_t argc, char* cmd);
 
 typedef int PID;
-static PID childPid = 0;
+static PID CHILD_PID = 0;
 static void killChild(_unused int sig);
 
 #define RETURN(value) \
@@ -106,16 +106,9 @@ bool executeCommand(char* argv[]) {
   if (strncmp(argv[0], EXIT_CMD.str, EXIT_CMD.size) == 0)
     return true;
 
-  Pipe toChild   = {0};
   Pipe fromChild = {0};
   if (pipe((int*)&fromChild)) {
     printErr("pipe fromChild failed");
-    return true;
-  }
-  if (pipe((int*)&toChild)) {
-    printErr("pipe toChild failed");
-    checkError(close(fromChild.sink));
-    checkError(close(fromChild.source));
     return true;
   }
 
@@ -125,10 +118,6 @@ bool executeCommand(char* argv[]) {
     checkError(close(fromChild.source));
     checkError(dup2(fromChild.sink, STDOUT_FD));
     checkError(close(fromChild.sink));
-
-    checkError(close(toChild.sink));
-    checkError(dup2(toChild.source, STDIN_FD));
-    checkError(close(toChild.source));
 
     if (execvp(argv[0], argv) < 0) {
       if (errno == ENOENT)
@@ -143,30 +132,37 @@ bool executeCommand(char* argv[]) {
   }
 
   // parent
-  childPid = forkPid;
+
+  // setup signal handling
+  CHILD_PID = forkPid;
   struct sigaction act = {
     .sa_flags = SA_RESETHAND | SA_RESTART,
     .sa_handler = &killChild,
   };
-  checkError(sigaction(SIGINT, &act, NULL));
+  struct sigaction oldAct = {0};
+  checkError(sigaction(SIGINT, &act, &oldAct));
 
+  // setup fds
   checkError(close(fromChild.sink));
-  checkError(close(toChild.source));
+  FD parentStdinCopy = dup(STDIN_FD);
+  if (parentStdinCopy < 0) {
+   printErr("dup for the parent stdin failed, i'm tired...");
+   return true;
+  }
+  close(STDIN_FD);
 
-  FD oldStdin = dup(STDIN_FD);
-  if (oldStdin < 0)
-    printErr("dup for the old stdin failed, i'm tired...");
-
-  checkError(dup2(toChild.sink, STDIN_FD));
-  checkError(close(toChild.sink));
-
+  // echo all child's output
   if (echoFile(fromChild.source))
     printErr("echoFile failed");
 
   checkError(wait(NULL));
+  // restore old sigaction
+  CHILD_PID = -1;
+  checkError(sigaction(SIGINT, &oldAct, NULL));
+  // close remaining fds, and restore parent stdin
   checkError(close(fromChild.source));
-  checkError(dup2(oldStdin, STDIN_FD));
-  checkError(close(oldStdin));
+  checkError(dup2(parentStdinCopy, STDIN_FD));
+  checkError(close(parentStdinCopy));
 
   return false;
 }
@@ -217,7 +213,11 @@ static void populateArgv(char** argv, size_t argc, char* cmd) {
 }
 
 static void killChild(_unused int sig){ 
+  if (CHILD_PID < 0)
+    return;
+
   write(STDOUT_FD, "\n", 1);
-  kill(childPid, SIGTERM);
+  kill(CHILD_PID, SIGTERM);
+  CHILD_PID = -1;
   return;
 }
