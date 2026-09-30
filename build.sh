@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 
-SOURCES="src/main.c src/exec.c src/echo.c"
+SOURCES="src/main.c src/exec.c"
 BUILD_DIR="build"
 TARGET="$BUILD_DIR/minish"
 FLAGS="-Wall -Wextra -fsanitize=address -O0"
