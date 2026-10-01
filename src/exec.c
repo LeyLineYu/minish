@@ -254,6 +254,7 @@ static bool executePipedSubcommandsRec(Subcommand* subcommand,
         exit(1);
 
     execute(subcommand->argv);
+    checkError(wait(NULL));
     exit(0);
   }
 
